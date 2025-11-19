@@ -1,0 +1,5 @@
+build:
+	go build -tags "linux"
+
+dev:
+	go run .
