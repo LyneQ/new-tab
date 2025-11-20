@@ -193,8 +193,8 @@ h1 {
 }
 
 .link-preview img {
-    width: 70%;
-    height: 70%;
+    width: 48px;
+    height: 48px;
     object-fit: contain;
 }
 

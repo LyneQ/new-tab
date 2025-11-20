@@ -71,6 +71,8 @@
                     ⋮
                 </button>
                 <div class="item-menu" role="menu">
+                    <a role="menuitem" href="/move?id={{ .ID }}&dir=up" class="menu-item" data-action="move-up">Move left</a>
+                    <a role="menuitem" href="/move?id={{ .ID }}&dir=down" class="menu-item" data-action="move-down">Move right</a>
                     <a role="menuitem" href="/edit?id={{ .ID }}" class="menu-item" data-action="edit"
                        data-id="{{ .ID }}"
                        data-name="{{ if .Name }}{{ .Name }}{{ end }}"

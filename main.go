@@ -50,6 +50,7 @@ func main() {
 	http.HandleFunc("/add", addRoute)
 	http.HandleFunc("/edit", editRoute)
 	http.HandleFunc("/delete", deleteRoute)
+	http.HandleFunc("/move", moveRoute)
 	http.HandleFunc("/headers", headersRoute)
 	http.HandleFunc("/", searchRoute)
 
@@ -307,7 +308,6 @@ func addRoute(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
 
-// editRoute handles editing an existing link (alias: /editm)
 func editRoute(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		// Fallback for accidental GET (e.g., clicking the menu link without JS)
@@ -372,7 +372,6 @@ func editRoute(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
 
-// deleteRoute handles deleting a link by id. Supports GET (query) and POST (form)
 func deleteRoute(w http.ResponseWriter, req *http.Request) {
 	var idStr string
 	switch req.Method {
@@ -404,6 +403,77 @@ func deleteRoute(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Failed to delete link: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	http.Redirect(w, req, "/", http.StatusSeeOther)
+}
+
+func moveRoute(w http.ResponseWriter, req *http.Request) {
+	// Accept GET only; other methods redirect back harmlessly
+	if req.Method != http.MethodGet {
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	idStr := req.URL.Query().Get("id")
+	dir := strings.ToLower(strings.TrimSpace(req.URL.Query().Get("dir")))
+	if idStr == "" || (dir != "up" && dir != "down") {
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	// Find the current link position
+	var curPos int
+	err = db.QueryRow("SELECT position FROM links WHERE id = ?", id).Scan(&curPos)
+	if err != nil {
+		// Link not found; just go back
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	// Find neighbor based on direction
+	var neighborID, neighborPos int
+	switch dir {
+	case "up":
+		err = db.QueryRow("SELECT id, position FROM links WHERE position < ? ORDER BY position DESC LIMIT 1", curPos).Scan(&neighborID, &neighborPos)
+	case "down":
+		err = db.QueryRow("SELECT id, position FROM links WHERE position > ? ORDER BY position ASC LIMIT 1", curPos).Scan(&neighborID, &neighborPos)
+	}
+
+	if err != nil {
+		// No neighbor (already at boundary) or db error; go back silently
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	// Swap positions atomically
+	tx, err := db.Begin()
+	if err != nil {
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+	// Temporary position to avoid unique constraints if any
+	if _, err = tx.Exec("UPDATE links SET position = -1 WHERE id = ?", id); err != nil {
+		_ = tx.Rollback()
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+	if _, err = tx.Exec("UPDATE links SET position = ? WHERE id = ?", curPos, neighborID); err != nil {
+		_ = tx.Rollback()
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+	if _, err = tx.Exec("UPDATE links SET position = ? WHERE id = ?", neighborPos, id); err != nil {
+		_ = tx.Rollback()
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+	_ = tx.Commit()
 
 	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
