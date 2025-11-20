@@ -12,9 +12,10 @@
 </head>
 <body>
 
-<dialog>
+<!-- Add link dialog -->
+<dialog id="add-dialog">
     <button class="close-button">X</button>
-    <p>This modal dialog has a groovy backdrop!</p>
+    <p>Add New links</p>
     <form action="/add" method="POST" id="add-form">
         <label>
             <input type="text" name="name" placeholder="Name (Max 20 length)" required>
@@ -26,6 +27,25 @@
             <input type="url" name="favicon" placeholder="Custom favicon URL (optional)">
         </label>
         <button type="submit">Add</button>
+    </form>
+</dialog>
+
+<!-- Edit link dialog -->
+<dialog id="edit-dialog">
+    <button class="close-button">X</button>
+    <p>Edit Link</p>
+    <form action="/edit" method="POST" id="edit-form">
+        <input type="hidden" name="id" id="edit-id">
+        <label>
+            <input type="text" name="name" id="edit-name" placeholder="Name (Max 20 length)" required>
+        </label>
+        <label>
+            <input type="url" name="url" id="edit-url" placeholder="URL" required>
+        </label>
+        <label>
+            <input type="url" name="favicon" id="edit-favicon" placeholder="Custom favicon URL (optional)">
+        </label>
+        <button type="submit">Save</button>
     </form>
 </dialog>
 
@@ -43,6 +63,21 @@
                     </a>
                     <small style="color: var(--text-muted); display:block;">ID: {{ .ID }} • Position: {{ .Position
                         }}</small>
+                </div>
+            </div>
+            <!-- Per-item action menu -->
+            <div class="menu-container" onclick="event.stopPropagation();">
+                <button class="item-menu-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Open actions">
+                    ⋮
+                </button>
+                <div class="item-menu" role="menu">
+                    <a role="menuitem" href="/edit?id={{ .ID }}" class="menu-item" data-action="edit"
+                       data-id="{{ .ID }}"
+                       data-name="{{ if .Name }}{{ .Name }}{{ end }}"
+                       data-url="{{ .Href }}"
+                       data-favicon="{{ if .Img }}{{ .Img }}{{ end }}"
+                    >Edit</a>
+                    <a role="menuitem" href="/delete?id={{ .ID }}" class="menu-item danger" data-action="delete">Delete</a>
                 </div>
             </div>
         </li>

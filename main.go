@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,8 @@ func main() {
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 
 	http.HandleFunc("/add", addRoute)
+	http.HandleFunc("/edit", editRoute)
+	http.HandleFunc("/delete", deleteRoute)
 	http.HandleFunc("/headers", headersRoute)
 	http.HandleFunc("/", searchRoute)
 
@@ -292,12 +295,113 @@ func addRoute(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// Cut after 20 characters to avoid too long names
+	// Trim name to max 20 chars (safe)
 	name = name[:20]
 
 	_, err = db.Exec("INSERT INTO links (name, href, img, position) VALUES (?, ?, ?, ?)", name, href, img, position)
 	if err != nil {
 		http.Error(w, "Failed to insert link: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, req, "/", http.StatusSeeOther)
+}
+
+// editRoute handles editing an existing link (alias: /editm)
+func editRoute(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		// Fallback for accidental GET (e.g., clicking the menu link without JS)
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	if err := req.ParseForm(); err != nil {
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	idStr := req.FormValue("id")
+	if idStr == "" {
+		http.Error(w, "Missing id", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	name := req.FormValue("name")
+	href := req.FormValue("url")
+	favicon := req.FormValue("favicon")
+
+	if name == "" || href == "" {
+		http.Error(w, "Name and URL are required", http.StatusBadRequest)
+		return
+	}
+
+	// Trim name to max 20 chars (safe)
+	if len(name) > 20 {
+		name = name[:20]
+	}
+
+	// Handle optional favicon: use provided, otherwise try to discover
+	var img *string
+	if favicon != "" {
+		img = &favicon
+	} else {
+		if domain, err := GetDomainFromURL(href); err == nil {
+			if foundFavicon := getFaviconURL(domain); foundFavicon != "" {
+				img = &foundFavicon
+			}
+		}
+	}
+
+	// Perform update
+	if img != nil {
+		_, err = db.Exec("UPDATE links SET name = ?, href = ?, img = ? WHERE id = ?", name, href, img, id)
+	} else {
+		// Set img to NULL explicitly
+		_, err = db.Exec("UPDATE links SET name = ?, href = ?, img = NULL WHERE id = ?", name, href, id)
+	}
+	if err != nil {
+		http.Error(w, "Failed to update link: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, req, "/", http.StatusSeeOther)
+}
+
+// deleteRoute handles deleting a link by id. Supports GET (query) and POST (form)
+func deleteRoute(w http.ResponseWriter, req *http.Request) {
+	var idStr string
+	switch req.Method {
+	case http.MethodPost:
+		if err := req.ParseForm(); err != nil {
+			http.Error(w, "Failed to parse form", http.StatusBadRequest)
+			return
+		}
+		idStr = req.FormValue("id")
+	case http.MethodGet:
+		idStr = req.URL.Query().Get("id")
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if idStr == "" {
+		http.Error(w, "Missing id", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("DELETE FROM links WHERE id = ?", id)
+	if err != nil {
+		http.Error(w, "Failed to delete link: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
