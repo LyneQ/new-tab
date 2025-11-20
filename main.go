@@ -2,9 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"embed"
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +26,10 @@ type Link struct {
 	Position int
 }
 
+// Embed favicon, all files under static directory, and the default SQLite DB
+//
+//go:embed favicon.ico static/* identifier.sqlite
+var embedded embed.FS
 var HttpPort string = "8080"
 var db *sql.DB
 
@@ -39,14 +45,25 @@ func main() {
 
 	checkDatabaseHealth(db, true)
 
-	/* ===================================================
+	/* =================================================================================================================
 	 *                 HTTP section
-	 * ===================================================
-	 */
+	 * ===============================================================================================================*/
 
-	fs := http.FileServer(http.Dir("static"))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
+	// Serve embedded static files under /static/
+	staticFS, err := fs.Sub(embedded, "static")
+	if err != nil {
+		fmt.Println("failed to prepare embedded static FS:", err)
+		return
+	}
+	fileServer := http.FileServer(http.FS(staticFS))
 
+	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		data, _ := embedded.ReadFile("favicon.ico")
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(data)
+	})
+	http.Handle("/static/", http.StripPrefix("/static/", fileServer))
 	http.HandleFunc("/add", addRoute)
 	http.HandleFunc("/edit", editRoute)
 	http.HandleFunc("/delete", deleteRoute)
@@ -73,8 +90,8 @@ func getFaviconURL(domain string) string {
 	schemes := []string{"https", "http"}
 
 	// Precompile regexes
-	//   <link rel="icon" href="/favicon.ico">
-	//   <link href=/favicon.ico rel=icon>
+	//   <link rel="icon" href="/favicon.svg">
+	//   <link href=/favicon.svg rel=icon>
 	//   <link rel='shortcut icon' href='...'>
 	//   <link rel=apple-touch-icon href=/icon.png>
 	linkIconRe := regexp.MustCompile(`(?is)<link\b[^>]*\brel\s*=\s*(?:"[^"]*icon[^"]*"|'[^']*icon[^']*'|[^"'\s>]*icon[^"'\s>]*)[^>]*>`) // link with rel containing icon
@@ -137,27 +154,63 @@ func getFaviconURL(domain string) string {
 }
 
 func initializeSqlite3(databasePath string) (*sql.DB, error) {
-	file, err := os.Open(databasePath)
-	if err != nil {
-		return nil, fmt.Errorf("[Error] failed to open database file: %v", err)
-	}
-	defer file.Close()
+	// Check if the database file exists.
+	fi, statErr := os.Stat(databasePath)
+	if statErr == nil && !fi.IsDir() {
+		// Validate header of existing file.
+		file, err := os.Open(databasePath)
+		if err != nil {
+			return nil, fmt.Errorf("[Error] failed to open database file: %v", err)
+		}
+		defer file.Close()
 
-	header := make([]byte, 16)
-	if _, err := file.Read(header); err != nil {
-		return nil, fmt.Errorf("[Error] failed to read SQLite header: %v", err)
+		header := make([]byte, 16)
+		if _, err := file.Read(header); err != nil {
+			return nil, fmt.Errorf("[Error] failed to read SQLite header: %v", err)
+		}
+
+		if string(header[:15]) != "SQLite format 3" {
+			return nil, fmt.Errorf("[Error] invalid SQLite database file")
+		}
+	} else if os.IsNotExist(statErr) {
+		// Try to seed the database from the embedded file if available.
+		if data, err := embedded.ReadFile("identifier.sqlite"); err == nil {
+			if writeErr := os.WriteFile(databasePath, data, 0o644); writeErr != nil {
+				return nil, fmt.Errorf("[Error] failed to write embedded database file: %v", writeErr)
+			}
+		} else {
+			// If the embedded DB is not present, we'll let sql.Open create a new file and initSchema will prepare it.
+		}
+	} else if statErr != nil {
+		return nil, fmt.Errorf("[Error] failed to stat database file: %v", statErr)
 	}
 
-	if string(header[:15]) != "SQLite format 3" {
-		return nil, fmt.Errorf("[Error] invalid SQLite database file")
-	}
-
+	// Open (and create if missing) the SQLite database using modernc.org/sqlite driver.
 	db, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		return nil, err
 	}
 
+	// Ensure required schema exists.
+	if err := initSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return db, nil
+}
+
+func initSchema(db *sql.DB) error {
+	_, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            href TEXT NOT NULL,
+            img TEXT,
+            position INTEGER NOT NULL DEFAULT 0
+        );
+    `)
+	return err
 }
 
 func checkDatabaseHealth(db *sql.DB, shouldLogResult bool) bool {
@@ -245,7 +298,8 @@ func searchRoute(w http.ResponseWriter, req *http.Request) {
 		},
 	}
 
-	tmpl := template.Must(template.New("search.html").Funcs(funcMap).ParseFiles("static/search.html"))
+	// Render template from embedded filesystem
+	tmpl := template.Must(template.New("search.html").Funcs(funcMap).ParseFS(embedded, "static/search.html"))
 
 	data := struct {
 		Links []Link
@@ -297,7 +351,9 @@ func addRoute(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Trim name to max 20 chars (safe)
-	name = name[:20]
+	if len(name) > 20 {
+		name = name[:20]
+	}
 
 	_, err = db.Exec("INSERT INTO links (name, href, img, position) VALUES (?, ?, ?, ?)", name, href, img, position)
 	if err != nil {

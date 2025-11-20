@@ -1,5 +1,8 @@
 build:
-	go build -tags "linux"
+	GOOS=linux GOARCH=amd64 go build -o bin/HoleTab-linux-amd64
+	GOOS=windows GOARCH=amd64 go build -o bin/HoleTab-windows-amd64.exe
+	GOOS=darwin GOARCH=amd64 go build -o bin/HoleTab-darwin-amd64
+	GOOS=darwin GOARCH=arm64 go build -o bin/HoleTab-darwin-arm64
 
 dev:
 	go run .
