@@ -43,25 +43,16 @@ func main() {
 	 * ===================================================
 	 */
 
-	http.HandleFunc("/headers", headersRoute)
-
 	fs := http.FileServer(http.Dir("static"))
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 
+	http.HandleFunc("/add", addRoute)
+	http.HandleFunc("/headers", headersRoute)
 	http.HandleFunc("/", searchRoute)
 
 	_ = http.ListenAndServe(":"+HttpPort, nil)
 	fmt.Println("Server started on port" + HttpPort)
 
-}
-
-func headersRoute(w http.ResponseWriter, req *http.Request) {
-
-	for name, headers := range req.Header {
-		for _, h := range headers {
-			_, _ = fmt.Fprintf(w, "%v: %v\n", name, h)
-		}
-	}
 }
 
 func GetDomainFromURL(urlStr string) (string, error) {
@@ -74,7 +65,7 @@ func GetDomainFromURL(urlStr string) (string, error) {
 
 func getFaviconURL(domain string) string {
 	// First try to fetch the homepage and look for <link rel="...icon..." href="...">
-	client := http.Client{Timeout: 500 * time.Millisecond}
+	client := http.Client{Timeout: 1500 * time.Millisecond}
 	schemes := []string{"https", "http"}
 
 	// Precompile regexes
@@ -141,69 +132,6 @@ func getFaviconURL(domain string) string {
 	return "./static/earth.svg"
 }
 
-func searchRoute(w http.ResponseWriter, req *http.Request) {
-	rows, err := db.Query("SELECT id, name, href, img, position FROM links ORDER BY position")
-	if err != nil {
-		http.Error(w, "Database query error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var links []Link
-	for rows.Next() {
-		var link Link
-		if err := rows.Scan(&link.ID, &link.Name, &link.Href, &link.Img, &link.Position); err != nil {
-			http.Error(w, "Error scanning database rows", http.StatusInternalServerError)
-			return
-		}
-		links = append(links, link)
-	}
-
-	// Process favicon URLs for links without images
-	for i := range links {
-		if links[i].Img == nil {
-			if domain, err := GetDomainFromURL(links[i].Href); err == nil {
-				faviconURL := getFaviconURL(domain)
-				if faviconURL != "" {
-					links[i].Img = &faviconURL
-				}
-			}
-		}
-	}
-
-	// Define the helper function
-	funcMap := template.FuncMap{
-		"slicestr": func(s string, start, end int) string {
-			if start < 0 {
-				start = 0
-			}
-			if end > len(s) {
-				end = len(s)
-			}
-			if start > end {
-				return ""
-			}
-			return s[start:end]
-		},
-		"GetDomainFromURL": func(url string) string {
-			if domain, err := GetDomainFromURL(url); err == nil {
-				return domain
-			}
-			return url
-		},
-	}
-
-	tmpl := template.Must(template.New("search.html").Funcs(funcMap).ParseFiles("static/search.html"))
-
-	data := struct {
-		Links []Link
-	}{
-		Links: links,
-	}
-
-	tmpl.Execute(w, data)
-}
-
 func initializeSqlite3(databasePath string) (*sql.DB, error) {
 	file, err := os.Open(databasePath)
 	if err != nil {
@@ -258,4 +186,120 @@ func checkDatabaseHealth(db *sql.DB, shouldLogResult bool) bool {
 	}
 
 	return true
+}
+
+/* =====================================================================================================================
+ *                                              Routes
+ * ===================================================================================================================*/
+
+func headersRoute(w http.ResponseWriter, req *http.Request) {
+
+	for name, headers := range req.Header {
+		for _, h := range headers {
+			_, _ = fmt.Fprintf(w, "%v: %v\n", name, h)
+		}
+	}
+}
+
+func searchRoute(w http.ResponseWriter, req *http.Request) {
+	rows, err := db.Query("SELECT id, name, href, img, position FROM links ORDER BY position")
+	if err != nil {
+		http.Error(w, "Database query error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var links []Link
+	for rows.Next() {
+		var link Link
+		if err := rows.Scan(&link.ID, &link.Name, &link.Href, &link.Img, &link.Position); err != nil {
+			http.Error(w, "Error scanning database rows", http.StatusInternalServerError)
+			return
+		}
+		links = append(links, link)
+	}
+
+	// Define the helper function
+	funcMap := template.FuncMap{
+		"slicestr": func(s string, start, end int) string {
+			if start < 0 {
+				start = 0
+			}
+			if end > len(s) {
+				end = len(s)
+			}
+			if start > end {
+				return ""
+			}
+			return s[start:end]
+		},
+		"GetDomainFromURL": func(url string) string {
+			if domain, err := GetDomainFromURL(url); err == nil {
+				return domain
+			}
+			return url
+		},
+	}
+
+	tmpl := template.Must(template.New("search.html").Funcs(funcMap).ParseFiles("static/search.html"))
+
+	data := struct {
+		Links []Link
+	}{
+		Links: links,
+	}
+
+	tmpl.Execute(w, data)
+}
+
+func addRoute(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := req.ParseForm(); err != nil {
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	name := req.FormValue("name")
+	href := req.FormValue("url")
+	favicon := req.FormValue("favicon")
+
+	if name == "" || href == "" {
+		http.Error(w, "Name and URL are required", http.StatusBadRequest)
+		return
+	}
+
+	// Calculate the next position
+	var maxPos sql.NullInt64
+	err := db.QueryRow("SELECT MAX(position) FROM links").Scan(&maxPos)
+	position := 0
+	if err == nil && maxPos.Valid {
+		position = int(maxPos.Int64) + 1
+	}
+
+	// Handle optional favicon
+	var img *string
+	if favicon != "" {
+		img = &favicon
+	} else {
+		if domain, err := GetDomainFromURL(href); err == nil {
+			if foundFavicon := getFaviconURL(domain); foundFavicon != "" {
+				img = &foundFavicon
+			}
+		}
+	}
+
+	// Cut after 20 characters to avoid too long names
+	name = name[:20]
+
+	_, err = db.Exec("INSERT INTO links (name, href, img, position) VALUES (?, ?, ?, ?)", name, href, img, position)
+	if err != nil {
+		http.Error(w, "Failed to insert link: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
